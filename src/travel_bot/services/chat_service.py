@@ -6,6 +6,7 @@ import logging
 import time
 import uuid
 from collections import defaultdict, deque
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
 from travel_bot.config import Settings
@@ -14,6 +15,7 @@ from travel_bot.entities.catalog import EntityCatalog
 from travel_bot.entities.rendering import render_state
 from travel_bot.entities.requirements import compute_missing
 from travel_bot.errors import RateLimitedError, RequestValidationError
+from travel_bot.graph.progress import NODE_LABELS
 from travel_bot.graph.state import TurnContext, turn_input
 from travel_bot.graph.workflow import user_message
 from travel_bot.guardrails.input_guardrails import clean_text, redact_sensitive
@@ -50,6 +52,14 @@ class RateLimiter:
         if len(hits) >= self.per_minute:
             raise RateLimitedError(key)
         hits.append(now)
+
+
+@dataclass(frozen=True)
+class PreparedTurn:
+    session_id: str
+    message_id: str
+    text: str  # redacted
+    user_id: str | None = None
 
 
 @dataclass
@@ -89,6 +99,31 @@ class ChatService:
         content: str,
         user_id: str | None = None,
     ) -> ChatResponse:
+        prepared = await self.prepare_turn(session_id=session_id, session_token=session_token,
+                                           message_id=message_id, content=content, user_id=user_id)
+        if isinstance(prepared, ChatResponse):
+            return prepared
+        final: ChatResponse | None = None
+        async for event in self.run_turn(prepared):
+            if event["type"] == "final":
+                final = ChatResponse.model_validate(event["response"])
+        assert final is not None
+        return final
+
+    async def prepare_turn(
+        self,
+        *,
+        session_id: str,
+        session_token: str | None,
+        message_id: str,
+        content: str,
+        user_id: str | None = None,
+    ) -> PreparedTurn | ChatResponse:
+        """Validate, authorize, deduplicate and persist the user message.
+
+        Raises before any streaming starts, so HTTP errors keep proper status codes.
+        Returns the original reply for a duplicate delivery.
+        """
         # 1. Request validation (hard limits before anything else).
         text = clean_text(content or "")
         if not text:
@@ -122,34 +157,67 @@ class ChatService:
                 session_id, message_id, redacted,
                 meta={"redactions": redactions} if redactions else None,
             )
+        return PreparedTurn(session_id=session_id, message_id=message_id,
+                            text=redacted, user_id=user_id)
 
-        # 5. Run the graph on the session's thread.
+    async def run_turn(self, turn: PreparedTurn) -> AsyncIterator[dict]:
+        """Run the graph, yielding progress events and finally {"type": "final", ...}.
+
+        Progress events: step (agent/node start + done with ms), tool, model_call,
+        decision. `t` is milliseconds since the turn started.
+        """
         trace_id = uuid.uuid4().hex
-        ctx = TurnContext(session_id=session_id, message_id=message_id,
-                          trace_id=trace_id, user_id=user_id)
-        config = {"configurable": {"thread_id": session_id}, "recursion_limit": 25}
+        ctx = TurnContext(session_id=turn.session_id, message_id=turn.message_id,
+                          trace_id=trace_id, user_id=turn.user_id)
+        config = {"configurable": {"thread_id": turn.session_id}, "recursion_limit": 25}
+        t0 = time.perf_counter()
+        started: dict[str, float] = {}
+        state: dict = {}
+
+        def elapsed() -> int:
+            return int((time.perf_counter() - t0) * 1000)
+
+        yield {"type": "turn_started", "trace_id": trace_id, "t": 0}
         try:
-            state = await self.graph.ainvoke(
-                turn_input(message=user_message(redacted, message_id), ctx=ctx, text=redacted),
-                config, context=ctx,
-            )
+            async for mode, data in self.graph.astream(
+                turn_input(message=user_message(turn.text, turn.message_id), ctx=ctx, text=turn.text),
+                config, context=ctx, stream_mode=["tasks", "custom", "values"],
+            ):
+                if mode == "values":
+                    state = data
+                elif mode == "tasks":
+                    agent, label = NODE_LABELS.get(data["name"], (data["name"], ""))
+                    base = {"type": "step", "node": data["name"], "agent": agent, "label": label}
+                    if "result" in data:  # finished
+                        ms = int((time.perf_counter() - started.pop(data["id"], t0)) * 1000)
+                        status = "failed" if data.get("error") else "done"
+                        yield {**base, "status": status, "ms": ms, "t": elapsed()}
+                    else:
+                        started[data["id"]] = time.perf_counter()
+                        yield {**base, "status": "started", "t": elapsed()}
+                elif mode == "custom":
+                    yield {**data, "t": elapsed()}
         except Exception:
             # Nothing is claimed as saved; the same message_id can be retried safely.
-            logger.exception("graph execution failed", extra={"session_id": session_id,
+            logger.exception("graph execution failed", extra={"session_id": turn.session_id,
                                                                "trace_id": trace_id})
-            return ChatResponse(message_id=message_id, reply=TECHNICAL_ERROR_REPLY,
-                                response_type=ResponseType.CLARIFICATION.value,
-                                session_status=await self._status(session_id), trace_id=trace_id)
+            response = ChatResponse(message_id=turn.message_id, reply=TECHNICAL_ERROR_REPLY,
+                                    response_type=ResponseType.CLARIFICATION.value,
+                                    session_status=await self._status(turn.session_id),
+                                    trace_id=trace_id)
+            yield {"type": "final", "response": response.model_dump(mode="json"), "t": elapsed()}
+            return
 
         response = state.get("assistant_response") or {}
-        return ChatResponse(
-            message_id=message_id,
+        result = ChatResponse(
+            message_id=turn.message_id,
             reply=response.get("text", ""),
             response_type=response.get("response_type", ResponseType.ASK_QUESTION.value),
             target_entity_keys=response.get("target_entity_keys", []),
-            session_status=state.get("session_status") or await self._status(session_id),
+            session_status=state.get("session_status") or await self._status(turn.session_id),
             trace_id=trace_id,
         )
+        yield {"type": "final", "response": result.model_dump(mode="json"), "t": elapsed()}
 
     async def entities(self, session_id: str) -> EntitiesResponse:
         snapshot = await self.entity_service.get_snapshot(session_id)

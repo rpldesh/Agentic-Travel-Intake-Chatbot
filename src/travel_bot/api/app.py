@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import json
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, FastAPI, Header, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from travel_bot.bootstrap import build_chat_service
 from travel_bot.config import Settings
@@ -81,6 +82,40 @@ async def post_message(
         session_id=session_id, session_token=x_session_token,
         message_id=body.message_id, content=body.content, user_id=x_user_id,
     )
+
+
+@router.post("/sessions/{session_id}/messages/stream")
+async def post_message_stream(
+    session_id: str,
+    body: ChatRequest,
+    x_session_token: str | None = Header(default=None),
+    x_user_id: str | None = Header(default=None),
+    svc: ChatService = Depends(chat_service),
+) -> StreamingResponse:
+    """Same as POST /messages, but streams progress as Server-Sent Events.
+
+    Events: turn_started, step (agent start/done + ms), tool, model_call, decision,
+    and a final `final` event carrying the ChatResponse. Validation/auth errors are
+    raised before streaming starts, so they keep normal HTTP status codes.
+    """
+    prepared = await svc.prepare_turn(
+        session_id=session_id, session_token=x_session_token,
+        message_id=body.message_id, content=body.content, user_id=x_user_id,
+    )
+
+    async def events():
+        if isinstance(prepared, ChatResponse):  # duplicate delivery
+            yield _sse({"type": "final", "response": prepared.model_dump(mode="json"), "t": 0})
+            return
+        async for event in svc.run_turn(prepared):
+            yield _sse(event)
+
+    return StreamingResponse(events(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+def _sse(event: dict) -> str:
+    return f"event: {event['type']}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
 
 
 @router.get("/sessions/{session_id}/entities", response_model=EntitiesResponse)

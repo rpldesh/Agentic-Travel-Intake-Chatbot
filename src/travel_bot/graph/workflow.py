@@ -33,6 +33,7 @@ from travel_bot.entities.catalog import EntityCatalog
 from travel_bot.entities.rendering import render_accepted
 from travel_bot.entities.requirements import compute_missing
 from travel_bot.errors import PersistenceError
+from travel_bot.graph.progress import emit, tool_call
 from travel_bot.graph.state import TravelState, TurnContext
 from travel_bot.guardrails.input_guardrails import InputGuardrail, safe_reply_for
 from travel_bot.guardrails.output_guardrails import validate_output
@@ -117,6 +118,8 @@ def build_graph(deps: GraphDeps, checkpointer: Checkpointer | None = None):
         result = await deps.guardrail.check(
             state.get("user_input", ""), session_language=session_language, call_log=log
         )
+        emit({"type": "decision", "detail": f"Guardrail: {result.outcome.value}"
+              + (f" ({', '.join(result.reason_codes)})" if result.reason_codes else "")})
         return {
             "guardrail_result": result.model_dump(mode="json"),
             "detected_language": result.detected_language,
@@ -139,7 +142,9 @@ def build_graph(deps: GraphDeps, checkpointer: Checkpointer | None = None):
 
     # --------------------------------------------------------------- context
     async def _load(session_id: str) -> tuple[EntitySnapshot, str]:
-        snapshot = await deps.entity_service.get_snapshot(session_id)
+        with tool_call("get_session_entities") as out:
+            snapshot = await deps.entity_service.get_snapshot(session_id)
+            out["summary"] = f"{len(snapshot.known_items())} saved details"
         async with deps.db.session() as s:
             session = await SessionRepository(s).get(session_id)
         return snapshot, session.status if session else SessionStatus.ACTIVE.value
@@ -177,6 +182,8 @@ def build_graph(deps: GraphDeps, checkpointer: Checkpointer | None = None):
             last_assistant=_last_assistant_text({"messages": _prior_messages(state)}),
             guardrail_outcome=(state.get("guardrail_result") or {}).get("outcome", "PASS"),
         ), call_log=log)
+        emit({"type": "decision",
+              "detail": f"Route: {decision.route.value} ({decision.intent_label})"})
         return {"route": decision.model_dump(mode="json"), **_merge_calls(state, log)}
 
     def after_supervisor(state: TravelState) -> str:
@@ -251,9 +258,11 @@ def build_graph(deps: GraphDeps, checkpointer: Checkpointer | None = None):
             )
             if extraction.confirms_summary and not result.accepted \
                     and state.get("last_response_type") == ResponseType.CONFIRM_SUMMARY:
-                await deps.entity_service.confirm_intake(
-                    runtime.context.session_id, source_message_id=runtime.context.message_id
-                )
+                with tool_call("confirm_intake") as out:
+                    confirmed = await deps.entity_service.confirm_intake(
+                        runtime.context.session_id, source_message_id=runtime.context.message_id
+                    )
+                    out["summary"] = f"{len(confirmed)} details confirmed"
         except PersistenceError:
             logger.error("entity persistence failed", extra={"session_id": runtime.context.session_id})
             return {"persistence_error": True, "accepted_entity_updates": [],
@@ -288,6 +297,8 @@ def build_graph(deps: GraphDeps, checkpointer: Checkpointer | None = None):
             session_complete=complete,
             ask_recommended=deps.ask_recommended,
         )
+        emit({"type": "decision", "detail": f"Next: {plan.response_type.value}"
+              + (f" -> {', '.join(plan.target_keys)}" if plan.target_keys else "")})
         prefix = state.get("small_talk_text", "")
         if (state.get("route") or {}).get("route") == Route.TRAVEL_ENTITY                 and state.get("entity_candidates") is None and not prefix:
             prefix = EXTRACTION_FAILED_PREFIX  # model failed: don't pretend we understood

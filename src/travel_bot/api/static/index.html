@@ -5,40 +5,76 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Travel Intake</title>
 <style>
-  :root { --bg:#f6f7f9; --panel:#fff; --text:#1d2330; --muted:#6b7280; --accent:#2563eb; --user:#e8efff; --border:#e5e7eb; }
-  @media (prefers-color-scheme: dark) { :root { --bg:#0f1218; --panel:#171b23; --text:#e6e8ee; --muted:#9aa3b2; --accent:#6c9cff; --user:#1f2a44; --border:#2a3040; } }
+  :root { --bg:#f6f7f9; --panel:#fff; --text:#1d2330; --muted:#6b7280; --accent:#2563eb; --user:#e8efff;
+          --border:#e5e7eb; --ok:#15803d; --bad:#b91c1c; --soft:#f3f4f6; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#0f1218; --panel:#171b23; --text:#e6e8ee; --muted:#9aa3b2;
+          --accent:#6c9cff; --user:#1f2a44; --border:#2a3040; --ok:#4ade80; --bad:#f87171; --soft:#1d222c; } }
   * { box-sizing:border-box; }
   body { margin:0; font:15px/1.5 system-ui, sans-serif; background:var(--bg); color:var(--text); }
-  main { max-width:1000px; margin:0 auto; padding:16px; display:grid; gap:16px; grid-template-columns:1fr; }
+  main { max-width:1060px; margin:0 auto; padding:16px; display:grid; gap:16px; grid-template-columns:1fr; }
   @media (min-width:860px) { main { grid-template-columns:2fr 1fr; } }
-  section { background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:16px; }
+  section { background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:16px; min-width:0; }
   h1 { font-size:18px; margin:0 0 12px; } h2 { font-size:15px; margin:0 0 8px; }
-  #log { height:60vh; overflow-y:auto; display:flex; flex-direction:column; gap:8px; }
-  .msg { padding:8px 12px; border-radius:10px; max-width:85%; white-space:pre-wrap; }
-  .user { background:var(--user); align-self:flex-end; } .bot { border:1px solid var(--border); align-self:flex-start; }
+  #log { height:62vh; overflow-y:auto; display:flex; flex-direction:column; gap:10px; }
+  .msg { padding:8px 12px; border-radius:10px; max-width:88%; white-space:pre-wrap; overflow-wrap:anywhere; }
+  .user { background:var(--user); align-self:flex-end; }
+  .bot { border:1px solid var(--border); align-self:flex-start; }
   form { display:flex; gap:8px; margin-top:12px; }
-  input { flex:1; padding:10px; border-radius:8px; border:1px solid var(--border); background:var(--bg); color:var(--text); }
+  input { flex:1; min-width:0; padding:10px; border-radius:8px; border:1px solid var(--border); background:var(--bg); color:var(--text); }
   button { padding:10px 14px; border:0; border-radius:8px; background:var(--accent); color:#fff; cursor:pointer; }
-  table { width:100%; border-collapse:collapse; font-size:13px; } td { padding:4px; border-bottom:1px solid var(--border); vertical-align:top; }
-  .st { color:var(--muted); font-size:12px; } small { color:var(--muted); }
+  button:disabled { opacity:.5; cursor:default; }
+  table { width:100%; border-collapse:collapse; font-size:13px; } td { padding:4px; border-bottom:1px solid var(--border); vertical-align:top; overflow-wrap:anywhere; }
+  .st, small { color:var(--muted); font-size:12px; }
+
+  /* activity trace */
+  .activity { align-self:flex-start; width:min(100%, 520px); font-size:12.5px; background:var(--soft);
+              border:1px solid var(--border); border-radius:10px; padding:8px 10px; }
+  .activity summary { cursor:pointer; color:var(--muted); list-style:none; }
+  .activity summary::-webkit-details-marker { display:none; }
+  .activity summary::before { content:"▸ "; } .activity[open] summary::before { content:"▾ "; }
+  .now { display:flex; gap:8px; align-items:center; font-weight:600; margin-bottom:4px; }
+  .steps { margin:4px 0 0; padding:0; list-style:none; }
+  .step { display:grid; grid-template-columns:16px 1fr auto; gap:6px; padding:2px 0; }
+  .step .ic { text-align:center; } .step.done .ic { color:var(--ok); } .step.failed .ic { color:var(--bad); }
+  .step .ms, .sub .ms { color:var(--muted); font-variant-numeric:tabular-nums; }
+  .step .lbl { color:var(--muted); }
+  .sub { display:grid; grid-template-columns:16px 1fr auto; gap:6px; padding:1px 0 1px 22px; color:var(--muted); }
+  .sub.failed { color:var(--bad); }
+  .tag { font-family:ui-monospace, monospace; font-size:11.5px; color:var(--text); }
+  .spin { width:12px; height:12px; border:2px solid var(--border); border-top-color:var(--accent);
+          border-radius:50%; animation:spin .8s linear infinite; display:inline-block; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .spin { animation:none; } }
 </style>
 </head>
 <body>
 <main>
   <section>
     <h1>Trip planner</h1>
-    <div id="log"></div>
-    <form id="f"><input id="t" autocomplete="off" placeholder="Say hi, or tell me about your trip…" maxlength="2000"><button>Send</button></form>
+    <div id="log" aria-live="polite"></div>
+    <form id="f"><input id="t" autocomplete="off" placeholder="Say hi, or tell me about your trip…" maxlength="2000"><button id="send">Send</button></form>
     <small id="status"></small>
   </section>
-  <section><h2>Captured details</h2><table id="ents"></table><p><button id="reset" type="button">New session</button></p></section>
+  <section>
+    <h2>Captured details</h2><table id="ents"></table>
+    <p><label><input type="checkbox" id="showTrace" checked> Show agent activity</label></p>
+    <p><button id="reset" type="button">New session</button></p>
+  </section>
 </main>
 <script>
-const log = document.getElementById('log'), input = document.getElementById('t');
+const log = document.getElementById('log'), input = document.getElementById('t'), sendBtn = document.getElementById('send');
+const showTrace = document.getElementById('showTrace');
 let sess = null;
 try { sess = JSON.parse(sessionStorage.getItem('travel_session')); } catch (e) {}
+try { showTrace.checked = localStorage.getItem('show_trace') !== '0'; } catch (e) {}
+showTrace.onchange = () => { try { localStorage.setItem('show_trace', showTrace.checked ? '1' : '0'); } catch (e) {}
+  document.querySelectorAll('.activity').forEach(a => a.hidden = !showTrace.checked); };
 
-function add(role, text) { const d = document.createElement('div'); d.className = 'msg ' + role; d.textContent = text; log.appendChild(d); log.scrollTop = log.scrollHeight; }
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const fmt = ms => ms >= 1000 ? (ms / 1000).toFixed(1) + ' s' : ms + ' ms';
+function add(role, text) { const d = document.createElement('div'); d.className = 'msg ' + role; d.textContent = text;
+  log.appendChild(d); log.scrollTop = log.scrollHeight; return d; }
+
 async function newSession() {
   const r = await fetch('/sessions', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' });
   sess = await r.json(); try { sessionStorage.setItem('travel_session', JSON.stringify(sess)); } catch (e) {}
@@ -51,21 +87,110 @@ async function refresh() {
   const data = await r.json();
   document.getElementById('status').textContent = `Session: ${data.session_status}`;
   document.getElementById('ents').innerHTML = data.entities.filter(e => e.status !== 'missing')
-    .map(e => `<tr><td>${e.label}</td><td>${escapeHtml(JSON.stringify(e.value ?? ''))}<div class="st">${e.status}${e.user_confirmed ? ' · confirmed' : ''}</div></td></tr>`).join('');
+    .map(e => `<tr><td>${esc(e.label)}</td><td>${esc(JSON.stringify(e.value ?? ''))}<div class="st">${esc(e.status)}${e.user_confirmed ? ' · confirmed' : ''}</div></td></tr>`).join('');
 }
-function escapeHtml(s) { return s.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 async function loadHistory() {
   const r = await fetch(`/sessions/${sess.session_id}/messages`, { headers: headers() });
   if (!r.ok) return newSession();
   (await r.json()).forEach(m => add(m.role === 'user' ? 'user' : 'bot', m.content)); refresh();
 }
+
+/* ---- live activity panel ------------------------------------------------ */
+class Activity {
+  constructor() {
+    this.el = document.createElement('details'); this.el.className = 'activity'; this.el.open = true;
+    this.el.hidden = !showTrace.checked;
+    this.el.innerHTML = '<summary><span class="sumtext">Working…</span></summary>' +
+      '<div class="now"><span class="spin"></span><span class="nowtext">Starting…</span><span class="ms nowms"></span></div>' +
+      '<ul class="steps"></ul>';
+    log.appendChild(this.el);
+    this.steps = this.el.querySelector('.steps'); this.nowText = this.el.querySelector('.nowtext');
+    this.nowMs = this.el.querySelector('.nowms'); this.byNode = {}; this.current = null;
+    this.models = 0; this.tools = 0; this.t0 = performance.now();
+    this.timer = setInterval(() => this.nowMs.textContent = fmt(Math.round(performance.now() - this.t0)), 100);
+  }
+  scroll() { log.scrollTop = log.scrollHeight; }
+  step(ev) {
+    if (ev.status === 'started') {
+      const li = document.createElement('li'); li.className = 'step running';
+      li.innerHTML = `<span class="ic"><span class="spin"></span></span><span><b>${esc(ev.agent)}</b> <span class="lbl">${esc(ev.label)}</span></span><span class="ms"></span>`;
+      const subs = document.createElement('div');
+      this.steps.append(li, subs); this.byNode[ev.node] = { li, subs }; this.current = ev.node;
+      this.nowText.textContent = `${ev.agent}: ${ev.label}`;
+    } else {
+      const s = this.byNode[ev.node]; if (!s) return;
+      s.li.className = 'step ' + ev.status;
+      s.li.querySelector('.ic').textContent = ev.status === 'failed' ? '✕' : '✓';
+      s.li.querySelector('.ms').textContent = fmt(ev.ms);
+    }
+    this.scroll();
+  }
+  sub(html, ms, cls = '', key = null) {
+    const s = this.byNode[this.current]; if (!s) return;
+    let row = key && s.subs.querySelector(`[data-key="${key}"]`);
+    if (!row) { row = document.createElement('div'); if (key) row.dataset.key = key; s.subs.appendChild(row); }
+    row.className = 'sub ' + cls;
+    row.innerHTML = `<span>↳</span><span>${html}</span><span class="ms">${ms == null ? '<span class="spin"></span>' : ms === '' ? '' : fmt(ms)}</span>`;
+    this.scroll();
+  }
+  model(ev) {
+    const key = 'm-' + ev.role + (ev.fallback ? '-fb' : '');
+    const what = `model <span class="tag">${esc(ev.model_id)}</span> (${esc(ev.role)})${ev.fallback ? ' · fallback' : ''}`;
+    if (ev.status === 'started') { this.sub(what, null, '', key); this.nowText.textContent += ' · calling model'; return; }
+    this.models++;
+    const extra = ev.status === 'failed' ? ' · failed, using safe fallback' : (ev.attempts > 1 ? ` · ${ev.attempts} attempts` : '');
+    this.sub(what + extra, ev.ms, ev.status === 'failed' ? 'failed' : '', key);
+  }
+  tool(ev) {
+    const key = 't-' + ev.name;
+    const what = `tool <span class="tag">${esc(ev.name)}</span>` + (ev.summary ? ` · ${esc(ev.summary)}` : '') +
+      (ev.accepted_keys && ev.accepted_keys.length ? ` <span class="tag">[${esc(ev.accepted_keys.join(', '))}]</span>` : '') +
+      (ev.rejected && ev.rejected.length ? ` · rejected <span class="tag">${esc(ev.rejected.join(', '))}</span>` : '');
+    if (ev.status === 'started') { this.sub(what, null, '', key); return; }
+    this.tools++;
+    this.sub(what, ev.ms, ev.status === 'failed' ? 'failed' : '', key);
+  }
+  decision(ev) { this.sub(esc(ev.detail), ''); }
+  finish(totalMs) {
+    clearInterval(this.timer);
+    this.el.querySelector('.now').remove();
+    this.el.querySelector('.sumtext').textContent =
+      `Processed in ${fmt(totalMs)} · ${Object.keys(this.byNode).length} steps · ${this.models} model calls · ${this.tools} tool calls`;
+    this.el.open = false;
+  }
+}
+
+async function send(text) {
+  const act = new Activity();
+  const r = await fetch(`/sessions/${sess.session_id}/messages/stream`, { method: 'POST', headers: headers(),
+    body: JSON.stringify({ message_id: crypto.randomUUID(), content: text }) });
+  if (!r.ok) { act.finish(0); act.el.remove(); const d = await r.json().catch(() => ({}));
+    add('bot', d.detail || 'Something went wrong.'); return; }
+  const reader = r.body.getReader(), dec = new TextDecoder(); let buf = '', final = null;
+  while (true) {
+    const { value, done } = await reader.read(); if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let i;
+    while ((i = buf.indexOf('\n\n')) >= 0) {
+      const chunk = buf.slice(0, i); buf = buf.slice(i + 2);
+      const line = chunk.split('\n').find(l => l.startsWith('data: ')); if (!line) continue;
+      const ev = JSON.parse(line.slice(6));
+      if (ev.type === 'step') act.step(ev);
+      else if (ev.type === 'model_call') act.model(ev);
+      else if (ev.type === 'tool') act.tool(ev);
+      else if (ev.type === 'decision') act.decision(ev);
+      else if (ev.type === 'final') { final = ev; }
+    }
+  }
+  act.finish(final ? final.t : Math.round(performance.now() - act.t0));
+  add('bot', final ? final.response.reply : 'Something went wrong.');
+}
+
 document.getElementById('f').onsubmit = async (e) => {
   e.preventDefault(); const text = input.value.trim(); if (!text) return;
-  input.value = ''; add('user', text);
-  const r = await fetch(`/sessions/${sess.session_id}/messages`, { method: 'POST', headers: headers(),
-    body: JSON.stringify({ message_id: crypto.randomUUID(), content: text }) });
-  const data = await r.json();
-  add('bot', r.ok ? data.reply : (data.detail || 'Something went wrong.')); refresh();
+  input.value = ''; add('user', text); sendBtn.disabled = true;
+  try { await send(text); } catch (err) { add('bot', 'Connection problem. Please try again.'); }
+  finally { sendBtn.disabled = false; input.focus(); refresh(); }
 };
 document.getElementById('reset').onclick = newSession;
 sess ? loadHistory() : newSession();

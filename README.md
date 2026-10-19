@@ -229,7 +229,7 @@ Edit `.env`: set `OPENAI_API_KEY` (and/or `GOOGLE_API_KEY`) and choose a provide
 ### Run
 
 ```bash
-uv run travel-bot            # terminal chat (/entities shows saved details, --debug shows metadata)
+uv run travel-bot            # terminal chat (/entities shows saved details, --debug shows live agent activity)
 uv run travel-bot-api        # http://127.0.0.1:8000 (web chat) and /docs (API)
 ```
 
@@ -241,6 +241,7 @@ SQLite files `travel_bot.db` (application data) and `travel_bot_checkpoints.db` 
 |---|---|---|
 | `POST` | `/sessions` | Returns `session_id` and a secret `session_token`. |
 | `POST` | `/sessions/{id}/messages` | Body `{message_id, content}`; header `X-Session-Token`. `message_id` is the idempotency key. |
+| `POST` | `/sessions/{id}/messages/stream` | Same, but streams Server-Sent Events: each agent step (start/done, ms), tool calls, model calls, routing decisions, then a `final` event with the reply. |
 | `GET` | `/sessions/{id}/entities` | Canonical entity snapshot + missing/ambiguous fields. |
 | `GET` | `/sessions/{id}/messages` | Stored (redacted) conversation. |
 

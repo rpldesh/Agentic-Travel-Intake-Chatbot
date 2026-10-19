@@ -14,6 +14,7 @@ from typing import TypeVar
 from langchain_core.messages import BaseMessage
 from pydantic import BaseModel, ValidationError
 
+from travel_bot.graph.progress import emit
 from travel_bot.models.model_factory import RoleModel
 
 logger = logging.getLogger(__name__)
@@ -58,6 +59,8 @@ async def invoke_structured(
 
     for model_id, model, is_fallback in candidates:
         runnable = model.with_structured_output(schema)
+        emit({"type": "model_call", "status": "started", "role": role_model.role,
+              "model_id": model_id, "fallback": is_fallback})
         attempts = 0
         start = time.perf_counter()
         last_error: str | None = None
@@ -85,11 +88,13 @@ async def invoke_structured(
 
 
 def _record(log, role, model_id, ok, start, attempts, fallback, error, prompt_version) -> None:
+    latency_ms = int((time.perf_counter() - start) * 1000)
+    emit({"type": "model_call", "status": "done" if ok else "failed", "role": role,
+          "model_id": model_id, "ms": latency_ms, "attempts": attempts, "fallback": fallback})
     if log is None:
         return
     log.calls.append(CallRecord(
-        role=role, model_id=model_id, ok=ok,
-        latency_ms=int((time.perf_counter() - start) * 1000),
+        role=role, model_id=model_id, ok=ok, latency_ms=latency_ms,
         attempts=attempts, used_fallback=fallback, error=error,
         prompt_version=prompt_version,
     ))

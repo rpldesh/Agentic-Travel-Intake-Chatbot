@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from langchain_core.tools import BaseTool, StructuredTool
 from pydantic import BaseModel, Field
 
+from travel_bot.graph.progress import tool_call
 from travel_bot.schemas.entities import (
     EntityCandidate,
     EntitySnapshot,
@@ -29,6 +30,15 @@ class RecordEntityUpdatesArgs(BaseModel):
     )
 
 
+def _update_summary(result: EntityUpdateResult) -> str:
+    if result.already_applied:
+        return "already applied (duplicate delivery)"
+    parts = [f"{len(result.accepted)} saved"]
+    if result.rejected:
+        parts.append(f"{len(result.rejected)} rejected")
+    return ", ".join(parts)
+
+
 @dataclass
 class EntityTools:
     """Session-bound entity operations, usable directly or as LangChain tools."""
@@ -39,21 +49,32 @@ class EntityTools:
     current_message_text: str
 
     async def get_session_entities(self) -> EntitySnapshot:
-        return await self.service.get_snapshot(self.session_id)
+        with tool_call("get_session_entities") as out:
+            snapshot = await self.service.get_snapshot(self.session_id)
+            out["summary"] = f"{len(snapshot.known_items())} saved details"
+            return snapshot
 
     async def get_missing_entities(self) -> MissingReport:
-        return await self.service.get_missing(self.session_id)
+        with tool_call("get_missing_entities") as out:
+            report = await self.service.get_missing(self.session_id)
+            out["summary"] = f"{len(report.missing_required)} required still missing"
+            return report
 
     async def record_entity_updates(
         self, updates: list[EntityCandidate], expected_version: int | None = None
     ) -> EntityUpdateResult:
-        return await self.service.record_updates(
-            self.session_id,
-            updates,
-            source_message_id=self.source_message_id,
-            current_message_text=self.current_message_text,
-            expected_version=expected_version,
-        )
+        with tool_call("record_entity_updates", candidates=len(updates)) as out:
+            result = await self.service.record_updates(
+                self.session_id,
+                updates,
+                source_message_id=self.source_message_id,
+                current_message_text=self.current_message_text,
+                expected_version=expected_version,
+            )
+            out["summary"] = _update_summary(result)
+            out["accepted_keys"] = [a.entity_key for a in result.accepted]
+            out["rejected"] = [f"{r.entity_key}:{r.reason_code}" for r in result.rejected]
+            return result
 
     def as_langchain_tools(self) -> list[BaseTool]:
         async def _get_entities() -> dict:
