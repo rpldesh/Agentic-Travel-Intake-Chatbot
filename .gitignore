@@ -218,3 +218,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Travel bot local data (conversation content; never commit)
+travel_bot*.db
+travel_bot*.db-*
+*.db-wal
+*.db-shm
+eval_report*.json
